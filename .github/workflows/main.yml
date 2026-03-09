@@ -33,7 +33,7 @@ jobs:
 
           - name: web
             runner: ubuntu-latest
-            build_cmd: flet build web --base-url /ProxyChainingApp/
+            build_cmd: flet build web --base-url /ProxyChainer/
             artifact_path: build/web
 
     steps:
