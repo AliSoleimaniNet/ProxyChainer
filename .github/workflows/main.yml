@@ -1,47 +1,102 @@
-name: Build and Release ProxyChainer
+name: Ultimate ProxyChainer Build & Deploy
+
 on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
   workflow_dispatch:
 
+env:
+  UV_PYTHON: "3.12"
+  PYTHONUTF8: 1
+  FLET_CLI_NO_RICH_OUTPUT: 1
+
 jobs:
-  release:
-    name: Build and Create Release
-    runs-on: windows-latest
-    
+  build_apps:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            runner: windows-latest
+            build_cmd: "flet build windows"
+            artifact_path: build/windows
+          
+          - name: apk
+            runner: ubuntu-latest
+            build_cmd: "flet build apk"
+            artifact_path: build/apk
+
+          - name: web
+            runner: ubuntu-latest
+            build_cmd: "flet build web --base-url /${{ github.event.repository.name }}/"
+            artifact_path: build/web
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Build App
+        run: uv run ${{ matrix.build_cmd }} --yes
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
-          python-version: '3.11'
+          name: ${{ matrix.name }}-artifact
+          path: ${{ matrix.artifact_path }}
 
-      - name: Install Dependencies
-        run: |
-          pip install flet requests
-          
-      - name: Build Windows EXE
-        run: |
-          flet build windows
-          move build\windows dist-windows
+  deploy_web:
+    name: Deploy to GitHub Pages 🚀
+    needs: build_apps
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    steps:
+      - name: Download Web Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-artifact
+          path: web-dist
 
-      - name: Build Android APK
+      - name: Upload to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web-dist
+
+      - name: Deploy
+        uses: actions/deploy-pages@v4
+
+  create_release:
+    name: Create GitHub Release 📦
+    needs: build_apps
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        path: all-artifacts
+
+      - name: Prepare Release Files
         run: |
-          flet build apk
-          
-      - name: Create GitHub Release
-        id: create_release
+          mkdir release-files
+          cp all-artifacts/windows-artifact/*.exe release-files/ProxyChainer-Windows.exe || true
+          cp all-artifacts/apk-artifact/*.apk release-files/ProxyChainer-Android.apk || true
+
+      - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            build/apk/*.apk
-            dist-windows/*.exe
+          files: release-files/*
           name: Release ${{ github.ref_name }}
-          tag_name: ${{ github.ref }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: true
