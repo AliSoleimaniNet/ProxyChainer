@@ -1,12 +1,13 @@
 [project]
 name = "proxychainer"
-version = "1.1.5"
+version = "1.2.0"
 description = "SOCKS -> VLESS Proxy Chainer"
 requires-python = ">=3.11"
 dependencies = [
     "flet>=0.82.0",
     "requests",
     "httpx",
+    "oauthlib",
 ]
 
 [tool.flet]
