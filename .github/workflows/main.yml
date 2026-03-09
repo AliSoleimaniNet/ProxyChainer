@@ -49,8 +49,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install Dependencies
-        run: uv pip install flet requests
+      - name: Create Virtual Environment and Install Dependencies
+        run: |
+          uv venv
+          uv pip install flet requests
 
       - name: Build App
         run: uv run ${{ matrix.build_cmd }} --yes
