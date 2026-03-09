@@ -66,7 +66,7 @@ jobs:
   deploy_web:
     name: Deploy to GitHub Pages 🚀
     needs: build_apps
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -102,16 +102,26 @@ jobs:
           path: all-artifacts
 
       - name: Prepare Release Files
+        shell: bash
         run: |
           mkdir -p release-files
-          find all-artifacts -name "*.exe" -exec cp {} release-files/ProxyChainer-Windows.exe \;
+          
+          if [ -d "all-artifacts/windows-artifact" ]; then
+            cd all-artifacts/windows-artifact
+            zip -r ../../release-files/ProxyChainer-Windows.zip .
+            cd ../..
+          fi
+
           find all-artifacts -name "*.apk" -exec cp {} release-files/ProxyChainer-Android.apk \;
+          
           ls -R release-files/
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release-files/*
+          files: |
+            release-files/ProxyChainer-Windows.zip
+            release-files/ProxyChainer-Android.apk
           name: Release ${{ github.ref_name }}
           tag_name: ${{ github.ref }}
           generate_release_notes: true
