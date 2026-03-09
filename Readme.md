@@ -7,7 +7,7 @@
 
 ## 🌐 Live Demo (Web Version)
 You can use the application directly in your browser without installation:
-👉 **[https://AliSoleimaniNet.github.io/ProxyChainingApp/](https://AliSoleimaniNet.github.io/ProxyChainingApp/)**
+👉 **[https://AliSoleimaniNet.github.io/ProxyChainer/](https://AliSoleimaniNet.github.io/ProxyChainer/)**
 
 ---
 
@@ -26,7 +26,7 @@ You can use the application directly in your browser without installation:
 
 ## 📦 Download Desktop & Mobile
 
-Our CI/CD pipeline automatically builds the latest versions for all platforms. You can find them in the **[Releases](https://github.com/AliSoleimaniNet/ProxyChainingApp/releases)** section:
+Our CI/CD pipeline automatically builds the latest versions for all platforms. You can find them in the **[Releases](https://github.com/AliSoleimaniNet/ProxyChainer/releases)** section:
 
 * **Windows:** Download `ProxyChainer-Windows.zip` (Extract and run the `.exe`).
 * **Android:** Download `ProxyChainer-Android.apk` for mobile usage.
