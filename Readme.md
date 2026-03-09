@@ -9,6 +9,8 @@
 You can use the application directly in your browser without installation:
 👉 **[https://AliSoleimaniNet.github.io/ProxyChainer/](https://AliSoleimaniNet.github.io/ProxyChainer/)**
 
+<img width="1920" height="1020" alt="Windows View" src="https://github.com/user-attachments/assets/e3f676ff-2191-4ca7-a61b-ca23872194a9" />
+
 ---
 
 ## 🚀 How to Use
