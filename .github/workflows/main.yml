@@ -23,7 +23,7 @@ jobs:
         include:
           - name: windows
             runner: windows-latest
-            build_cmd: "flet build windows"
+            build_cmd: "flet build windows --include-package requests --include-package httpx"
             artifact_path: build/windows
           
           - name: apk
