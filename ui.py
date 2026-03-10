@@ -192,7 +192,7 @@ def build_page(page: ft.Page) -> None:
             set_status("GENERATE FIRST", DANGER, DANGER)
             return
         try:
-            name = get_filename(socks_input.value, proxy_input.value)
+            name = get_filename(socks_input.value, proxy_input.value) + "-" + ("mobile" if mobile_switch.value else "desktop")
         except Exception:
             name = ""
         ok, msg = await save_config(output_field.value, page=page, name=name)
