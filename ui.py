@@ -1,20 +1,18 @@
 """
-ui.py
-Flet UI — layout, widgets, event handlers.
-Imports business logic from network.py and parser.py.
+ui.py  —  ProxyChainer UI
 """
 
 import flet as ft
 import json
 import threading
+import pathlib
+import datetime
 from urllib.parse import urlparse
 
 from network import get_ip_info
 from parser  import parse_proxy_url, build_outbound
 
-
-# ── Theme / color tokens ──────────────────────────────────────────────────────
-
+# ── Colors ────────────────────────────────────────────────────────────────────
 BG       = "#0A0C10"
 SURFACE  = "#111318"
 CARD     = "#161A22"
@@ -26,10 +24,7 @@ TEXT     = "#E2E8F0"
 TEXT_DIM = "#7A8499"
 DANGER   = "#FF4757"
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def ping_color(ms: float | None) -> str:
+def ping_color(ms):
     if ms is None:  return "#888888"
     if ms < 300:    return ACCENT
     if ms < 1000:   return "#FFD700"
@@ -37,426 +32,455 @@ def ping_color(ms: float | None) -> str:
     if ms < 10000:  return DANGER
     return "#888888"
 
-
-def all_border(color: str = BORDER) -> ft.Border:
+def bdr(color=BORDER):
     s = ft.BorderSide(1, color)
     return ft.Border(s, s, s, s)
 
+def mono(text, size=10, color=TEXT_DIM):
+    return ft.Text(text, font_family="JetBrains", size=size, color=color)
 
-# ── Widget factories ──────────────────────────────────────────────────────────
-
-def make_mono(text: str, size: int = 13, color: str = TEXT,
-              weight=ft.FontWeight.NORMAL) -> ft.Text:
-    return ft.Text(text, font_family="JetBrains", size=size,
-                   color=color, weight=weight)
-
-
-def make_label(text: str) -> ft.Row:
+def lbl(text):
     return ft.Row([
-        ft.Container(width=3, height=14, bgcolor=ACCENT, border_radius=2),
-        ft.Text(text, font_family="Syne-Bold", size=11, color=ACCENT,
+        ft.Container(width=3, height=12, bgcolor=ACCENT, border_radius=2),
+        ft.Text(text, font_family="Syne-Bold", size=10, color=ACCENT,
                 weight=ft.FontWeight.W_600,
-                style=ft.TextStyle(letter_spacing=2)),
-    ], spacing=8)
+                style=ft.TextStyle(letter_spacing=1.5)),
+    ], spacing=6)
 
-
-def make_glowing_divider() -> ft.Container:
+def glow():
     return ft.Container(
         height=1,
         gradient=ft.LinearGradient(
-            begin=ft.Alignment(-1, 0),
-            end=ft.Alignment(1, 0),
-            colors=["#00000000", ACCENT + "55", ACCENT2 + "33", "#00000000"],
+            begin=ft.Alignment(-1, 0), end=ft.Alignment(1, 0),
+            colors=["#00000000", ACCENT+"55", ACCENT2+"33", "#00000000"],
         ),
-        margin=ft.Margin(0, 4, 0, 4),
+        margin=ft.Margin(0, 2, 0, 2),
     )
 
-
-def make_icon_btn(icon_name: str, tooltip: str, handler,
-                  color: str = MUTED) -> ft.IconButton:
+def ibtn(icon, tip, fn, color=MUTED):
     return ft.IconButton(
-        icon=icon_name, icon_color=color, icon_size=16,
-        tooltip=tooltip, on_click=handler,
+        icon=icon, icon_color=color, icon_size=15,
+        tooltip=tip, on_click=fn,
         style=ft.ButtonStyle(
-            overlay_color={
-                ft.ControlState.DEFAULT: "#00000000",
-                ft.ControlState.HOVERED: ACCENT + "18",
-            },
+            overlay_color={ft.ControlState.DEFAULT: "#00000000",
+                           ft.ControlState.HOVERED: ACCENT+"18"},
             shape=ft.RoundedRectangleBorder(radius=6),
-            padding=ft.Padding(6, 6, 6, 6),
+            padding=ft.Padding(5, 5, 5, 5),
         ),
     )
 
-
-def make_text_field(**kwargs) -> ft.TextField:
-    """Base text field with shared styling."""
-    defaults = dict(
-        text_style=ft.TextStyle(font_family="JetBrains", size=12, color=TEXT),
-        multiline=True, min_lines=3, max_lines=5, expand=True,
+def tfield(**kw):
+    base = dict(
+        text_style=ft.TextStyle(font_family="JetBrains", size=11, color=TEXT),
+        multiline=True, min_lines=3, max_lines=5,
+        expand=True,          # fill card width
         bgcolor=BG, border_color=BORDER,
         focused_border_color=ACCENT, cursor_color=ACCENT,
-        label_style=ft.TextStyle(color=MUTED, font_family="JetBrains", size=11),
-        hint_style=ft.TextStyle(color=MUTED, font_family="JetBrains", size=12),
-        content_padding=ft.Padding(14, 14, 14, 14),
+        label_style=ft.TextStyle(color=MUTED, font_family="JetBrains", size=10),
+        hint_style=ft.TextStyle(color=MUTED, font_family="JetBrains", size=10),
+        content_padding=ft.Padding(10, 10, 10, 10),
         border_radius=8,
     )
-    defaults.update(kwargs)
-    return ft.TextField(**defaults)
+    base.update(kw)
+    return ft.TextField(**base)
 
-
-def make_input_card(title: str, step: str, field: ft.TextField,
-                    paste_fn, accent: str = ACCENT,
-                    muted: str = MUTED) -> ft.Container:
-    return ft.Container(
-        content=ft.Column([
-            ft.Row([
-                make_label(f"STEP {step}  //  {title}"),
-                make_icon_btn(ft.Icons.CONTENT_PASTE, "Paste", paste_fn, muted),
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Container(height=8),
-            ft.Row([field], expand=True),
-        ], spacing=0, expand=True),
-        padding=ft.Padding(16, 16, 16, 16),
-        expand=True, bgcolor=CARD, border_radius=10,
-        border=all_border(),
-    )
-
-
-# ── Main page ─────────────────────────────────────────────────────────────────
-
+# ── Page ──────────────────────────────────────────────────────────────────────
 def build_page(page: ft.Page) -> None:
-    """Entry point called by ft.run — builds the entire UI."""
-
-    page.title       = "ProxyChainer — SOCKS → Any"
-    page.theme_mode  = ft.ThemeMode.DARK
-    page.padding     = 0
-    page.scroll      = ft.ScrollMode.AUTO
-    page.bgcolor     = BG
+    page.title      = "ProxyChainer"
+    page.theme_mode = ft.ThemeMode.DARK
+    page.padding    = 0
+    page.bgcolor    = BG
 
     page.fonts = {
-        "JetBrains":          "fonts/JetBrainsMono-Regular.ttf",
-        "JetBrains-SemiBold": "fonts/JetBrainsMono-SemiBold.ttf",
-        "JetBrains-Bold":     "fonts/JetBrainsMono-Bold.ttf",
-        "Syne":               "fonts/Syne-Regular.ttf",
-        "Syne-SemiBold":      "fonts/Syne-SemiBold.ttf",
-        "Syne-Bold":          "fonts/Syne-Bold.ttf",
-        "Syne-ExtraBold":     "fonts/Syne-ExtraBold.ttf",
+        "JetBrains":      "fonts/JetBrainsMono-Regular.ttf",
+        "JetBrains-Bold": "fonts/JetBrainsMono-Bold.ttf",
+        "Syne-Bold":      "fonts/Syne-Bold.ttf",
+        "Syne-ExtraBold": "fonts/Syne-ExtraBold.ttf",
     }
 
-    # ── Fields ────────────────────────────────────────────────────
-    socks_input = make_text_field(
-        label="SOCKS PROXY  //  socks://user:pass@host:port",
-        hint_text="socks://...",
+    # ── Stateful widgets (created once, reused across rebuilds) ───
+    socks_input = tfield(
+        label="SOCKS PROXY",
+        hint_text="socks://user:pass@host:port",
     )
-    proxy_input = make_text_field(
-        label="CONFIG  //  vless / vmess / trojan / ss",
-        hint_text="vless:// or vmess:// or trojan:// or ss://...",
-    )
-    mobile_mode_switch = ft.Switch(
-        active_color=ACCENT2,
-        value=False,
-    )
-    mobile_options_row = ft.Row(
-        [
-            ft.Icon(ft.Icons.PHONE_ANDROID, size=16, color=TEXT_DIM),
-            ft.Text("OPTIMIZE FOR MOBILE", font_family="JetBrains", size=11, color=TEXT_DIM),
-            mobile_mode_switch,
-        ],
-        alignment=ft.MainAxisAlignment.CENTER,
-        spacing=10
+    proxy_input = tfield(
+        label="PROXY CONFIG (vless / vmess / trojan / ss)",
+        hint_text="vless:// or vmess:// or trojan:// or ss://",
     )
     output_field = ft.TextField(
-        label="GENERATED CONFIG  //  JSON OUTPUT",
-        multiline=True, min_lines=12, expand=True, read_only=True,
-        text_style=ft.TextStyle(font_family="JetBrains", size=11, color=ACCENT2),
+        multiline=True, min_lines=12, max_lines=30,
+        read_only=True,
+        expand=True,
+        text_style=ft.TextStyle(font_family="JetBrains", size=10, color=ACCENT2),
         bgcolor=BG, border_color=BORDER,
         focused_border_color=ACCENT2, cursor_color=ACCENT2,
-        label_style=ft.TextStyle(color=MUTED, font_family="JetBrains", size=11),
-        content_padding=ft.Padding(14, 14, 14, 14), border_radius=8,
+        content_padding=ft.Padding(10, 10, 10, 10),
+        border_radius=8,
+        hint_text="Generated config appears here…",
+        hint_style=ft.TextStyle(color=MUTED, font_family="JetBrains", size=10),
+        filled=True,
     )
+    mobile_switch = ft.Switch(active_color=ACCENT2, value=False)
+    status_dot    = ft.Container(width=6, height=6, bgcolor=ACCENT, border_radius=50)
+    status_text   = ft.Text("READY", font_family="JetBrains", size=10,
+                            color=ACCENT, weight=ft.FontWeight.W_600)
+    ip_val    = ft.Text("—", font_family="JetBrains", size=10, color=ACCENT)
+    city_val  = ft.Text("—", font_family="JetBrains", size=10, color=TEXT)
+    ping_val  = ft.Text("—", font_family="JetBrains", size=10, color=MUTED,
+                        weight=ft.FontWeight.W_600)
+    ping_dot  = ft.Container(width=6, height=6, bgcolor="#888888", border_radius=50)
+    fetch_lbl = ft.Text("", font_family="JetBrains", size=9, color=ACCENT2)
 
-    # ── Status widgets ────────────────────────────────────────────
-    status_text = ft.Text("READY", font_family="JetBrains", size=11,
-                          color=ACCENT, weight=ft.FontWeight.W_600)
-    status_dot  = ft.Container(
-        width=7, height=7, bgcolor=ACCENT, border_radius=50,
-        animate=ft.Animation(800, ft.AnimationCurve.EASE_IN_OUT),
-    )
-
-    # ── IP footer row ─────────────────────────────────────────────
-    ip_row = ft.Row([
-        make_mono("IP ──", 11, TEXT_DIM),    make_mono("—", 11, MUTED),
-        ft.Container(width=8),
-        make_mono("CITY ──", 11, TEXT_DIM),  make_mono("—", 11, MUTED),
-        ft.Container(width=8),
-        make_mono("ORG ──", 11, TEXT_DIM),   make_mono("—", 11, MUTED),
-    ], spacing=4, wrap=True)
-
-    # ── Status helper ─────────────────────────────────────────────
-    def set_status(msg: str, color: str = ACCENT, dot: str = ACCENT) -> None:
+    # ── Helpers ───────────────────────────────────────────────────
+    def set_status(msg, color=ACCENT, dot=ACCENT):
         status_text.value  = msg
         status_text.color  = color
         status_dot.bgcolor = dot
         page.update()
 
-    # ── IP / ping refresh ─────────────────────────────────────────
-    def refresh_ip(e) -> None:
-        set_status("FETCHING IP + PING...", ACCENT2, ACCENT2)
-
-        def _fetch():
+    def refresh_ip(e):
+        fetch_lbl.value = "…"
+        page.update()
+        def _run():
             info = get_ip_info()
             if info:
                 pc = ping_color(info["ping"])
-                ip_row.controls = [
-                    make_mono("IP ──",    11, TEXT_DIM),
-                    make_mono(info["ip"], 11, ACCENT),
-                    ft.Container(width=12),
-                    make_mono("CITY ──",  11, TEXT_DIM),
-                    make_mono(f"{info['city']}, {info['country']}", 11, TEXT),
-                    ft.Container(width=12),
-                    make_mono("ORG ──",   11, TEXT_DIM),
-                    make_mono(info["org"], 11, TEXT_DIM),
-                    ft.Container(width=12),
-                    make_mono("PING ──",  11, TEXT_DIM),
-                    make_mono(
-                        f"{info['ping']} ms" if info["ping"] is not None else "N/A",
-                        11, pc, ft.FontWeight.W_600,
-                    ),
-                    ft.Container(width=7, height=7, bgcolor=pc,
-                                 border_radius=50, margin=ft.Margin(2, 0, 0, 0)),
-                ]
+                ip_val.value     = info["ip"]
+                city_val.value   = f"{info['city']}, {info['country']}"
+                ping_val.value   = f"{info['ping']} ms" if info["ping"] else "N/A"
+                ping_val.color   = pc
+                ping_dot.bgcolor = pc
+                fetch_lbl.value  = ""
                 set_status("IP INFO LOADED", ACCENT, ACCENT)
             else:
-                ip_row.controls = [
-                    make_mono("UNABLE TO FETCH IP — CHECK CONNECTION", 11, DANGER)
-                ]
+                ip_val.value    = "ERROR"
+                fetch_lbl.value = ""
                 set_status("CONNECTION ERROR", DANGER, DANGER)
             page.update()
+        threading.Thread(target=_run, daemon=True).start()
 
-        threading.Thread(target=_fetch, daemon=True).start()
-
-    # ── Generate ──────────────────────────────────────────────────
-    async def process_chain(e) -> None:
-        set_status("PROCESSING...", ACCENT2, ACCENT2)
+    async def process_chain(e):
+        set_status("PROCESSING…", ACCENT2, ACCENT2)
         try:
-            v_url = proxy_input.value.strip()
-            s_url = socks_input.value.strip()
-            is_mobile = mobile_mode_switch.value  # چک کردن وضعیت سوئیچ
-
+            v_url     = proxy_input.value.strip()
+            s_url     = socks_input.value.strip()
+            is_mobile = mobile_switch.value
             if not v_url or not s_url:
-                raise ValueError("Both SOCKS and proxy config are required")
-
-            s_parsed = urlparse(s_url)
-            s_addr   = s_parsed.hostname
-            s_port   = s_parsed.port
+                raise ValueError("Both fields are required")
+            s_parsed       = urlparse(s_url)
+            s_addr, s_port = s_parsed.hostname, s_parsed.port
             if not s_addr or not s_port:
-                raise ValueError(f"Invalid SOCKS URL: {s_url}")
-
+                raise ValueError("Invalid SOCKS URL")
             info     = parse_proxy_url(v_url)
             outbound = build_outbound(info, "iran-socks")
-
             config = {
                 "log": {"loglevel": "warning"},
                 "outbounds": [
                     outbound,
-                    {
-                        "tag": "iran-socks",
-                        "protocol": "socks",
-                        "settings": {"servers": [{"address": s_addr, "port": s_port}]},
-                    },
-                    {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}},
+                    {"tag": "iran-socks", "protocol": "socks",
+                     "settings": {"servers": [{"address": s_addr, "port": s_port}]}},
+                    {"tag": "direct", "protocol": "freedom",
+                     "settings": {"domainStrategy": "UseIP"}},
                     {"tag": "block", "protocol": "blackhole"},
-                ]
+                ],
             }
-
             if is_mobile:
-                config["dns"] = {
-                    "servers": ["1.1.1.1", "8.8.8.8", "https://dns.google/dns-query"]
-                }
+                config["dns"] = {"servers": ["1.1.1.1", "8.8.8.8"]}
                 config["routing"] = {
                     "domainStrategy": "IPIfNonMatch",
                     "rules": [
-                        {"type": "field", "outboundTag": "direct", "domain": ["geosite:ir", "domain:.ir"]},
-                        {"type": "field", "outboundTag": "direct", "ip": ["geoip:ir", "geoip:private"]},
-                        {"type": "field", "outboundTag": "proxy-chain", "port": "0-65535"},
-                    ]
+                        {"type": "field", "outboundTag": "direct",
+                         "domain": ["geosite:ir", "domain:.ir"]},
+                        {"type": "field", "outboundTag": "direct",
+                         "ip": ["geoip:ir", "geoip:private"]},
+                        {"type": "field", "outboundTag": "proxy-chain",
+                         "port": "0-65535"},
+                    ],
                 }
             else:
                 config["inbounds"] = [
-                    {
-                        "tag": "socks-in", "port": 10808, "listen": "127.0.0.1", "protocol": "socks",
-                        "settings": {"auth": "noauth", "udp": True},
-                        "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
-                    },
-                    {
-                        "tag": "http-in", "port": 10809, "listen": "127.0.0.1", "protocol": "http",
-                        "settings": {},
-                        "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
-                    }
+                    {"tag": "socks-in", "port": 10808, "listen": "127.0.0.1",
+                     "protocol": "socks",
+                     "settings": {"auth": "noauth", "udp": True},
+                     "sniffing": {"enabled": True, "destOverride": ["http","tls"]}},
+                    {"tag": "http-in", "port": 10809, "listen": "127.0.0.1",
+                     "protocol": "http", "settings": {},
+                     "sniffing": {"enabled": True, "destOverride": ["http","tls"]}},
                 ]
                 config["routing"] = {
                     "domainStrategy": "IPIfNonMatch",
-                    "rules": [
-                        {"type": "field", "outboundTag": "proxy-chain", "port": "0-65535"},
-                    ]
+                    "rules": [{"type": "field", "outboundTag": "proxy-chain",
+                               "port": "0-65535"}],
                 }
-
             output_field.value = json.dumps(config, indent=2)
             await ft.Clipboard().set(output_field.value)
-            
-            mode_label = "MOBILE" if is_mobile else "DESKTOP"
-            set_status(f"✓ {mode_label} CONFIG GENERATED & COPIED", ACCENT, ACCENT)
+            mode = "MOBILE" if is_mobile else "DESKTOP"
+            set_status(f"✓ {mode} · {info['protocol'].upper()} — COPIED",
+                       ACCENT, ACCENT)
             page.update()
-
         except Exception as ex:
             set_status(f"ERROR: {ex}", DANGER, DANGER)
             page.update()
-    
-    # ── Clipboard helpers ─────────────────────────────────────────
-    async def copy_output(e) -> None:
+
+    async def copy_output(e):
         if output_field.value:
             await ft.Clipboard().set(output_field.value)
-            set_status("COPIED TO CLIPBOARD  ✓", ACCENT, ACCENT)
+            set_status("COPIED  ✓", ACCENT, ACCENT)
 
-    async def paste_socks(e) -> None:
+    async def paste_socks(e):
         socks_input.value = await ft.Clipboard().get() or ""
         page.update()
 
-    async def paste_proxy(e) -> None:
+    async def paste_proxy(e):
         proxy_input.value = await ft.Clipboard().get() or ""
         page.update()
 
-    def clear_all(e) -> None:
-        socks_input.value  = ""
-        proxy_input.value  = ""
-        output_field.value = ""
+    def clear_all(e):
+        socks_input.value = proxy_input.value = output_field.value = ""
         set_status("CLEARED", MUTED, MUTED)
         page.update()
 
-    # ── Header ────────────────────────────────────────────────────
-    header = ft.Container(
-        content=ft.Row([
-            ft.Row([
-                ft.Container(width=4, height=28, bgcolor=ACCENT, border_radius=2),
-                ft.Column([
-                    ft.Text("PROXY CHAINER", font_family="Syne-ExtraBold",
-                            size=20, color=TEXT, weight=ft.FontWeight.W_800,
-                            style=ft.TextStyle(letter_spacing=3)),
-                    ft.Text("SOCKS  →  VLESS / VMess / Trojan / SS",
-                            font_family="JetBrains", size=10, color=TEXT_DIM,
-                            style=ft.TextStyle(letter_spacing=1)),
-                ], spacing=1, tight=True),
-            ], spacing=12),
-            ft.Container(
-                content=ft.Row([status_dot, status_text], spacing=8),
-                padding=ft.Padding(14, 8, 14, 8), bgcolor=SURFACE,
-                border_radius=6, border=all_border(),
-            ),
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        padding=ft.Padding(20, 16, 20, 16), bgcolor=SURFACE,
-        border=ft.Border(bottom=ft.BorderSide(1, BORDER)),
-    )
+    def export_json(e):
+        if not output_field.value:
+            set_status("GENERATE FIRST", DANGER, DANGER)
+            return
+        desktop = pathlib.Path.home() / "Desktop"
+        folder  = desktop if desktop.exists() else pathlib.Path.cwd()
+        ts      = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        path    = folder / f"proxy_chain_{ts}.json"
+        try:
+            path.write_text(output_field.value, encoding="utf-8")
+            set_status(f"SAVED ✓  {path.name}", ACCENT, ACCENT)
+        except Exception as ex:
+            set_status(f"SAVE ERROR: {ex}", DANGER, DANGER)
 
-    # ── Input cards ───────────────────────────────────────────────
-    socks_card = make_input_card("SOCKS PROXY",  "01", socks_input, paste_socks)
-    proxy_card = make_input_card("PROXY CONFIG", "02", proxy_input, paste_proxy)
+    # ── The one scrollable column that holds all body content ─────
+    # Structure:
+    #   page
+    #     Column(expand=True, spacing=0)
+    #       header_container          <- fixed, not scrolled
+    #       Column(scroll=AUTO,       <- scrollable body
+    #              expand=True)
+    #         body content…
+    #       footer_container          <- fixed, not scrolled
+    #
+    # This is the only layout that reliably shows sticky header+footer
+    # with a scrollable middle in Flet without ListView expand issues.
 
-    # ── Generate button ───────────────────────────────────────────
-    generate_btn = ft.Container(
-        content=ft.Button(
-            content=ft.Row([
-                ft.Icon(ft.Icons.BOLT, color=BG, size=18),
-                ft.Text("GENERATE CHAIN CONFIG", font_family="Syne-Bold",
-                        size=13, color=BG, weight=ft.FontWeight.W_700,
-                        style=ft.TextStyle(letter_spacing=1.5)),
-            ], spacing=10, tight=True),
-            on_click=process_chain,
-            style=ft.ButtonStyle(
-                bgcolor={ft.ControlState.DEFAULT: ACCENT,
-                         ft.ControlState.HOVERED: "#00FFBF"},
-                overlay_color="#00000000",
-                elevation={ft.ControlState.DEFAULT: 0, ft.ControlState.HOVERED: 8},
-                shadow_color=ACCENT + "55",
-                shape=ft.RoundedRectangleBorder(radius=8),
-                padding=ft.Padding(32, 16, 32, 16),
-                animation_duration=200,
-            ),
-        ),
-        alignment=ft.Alignment(0, 0),
-    )
+    header_container = ft.Container(bgcolor=SURFACE,
+                                    border=ft.Border(bottom=ft.BorderSide(1,BORDER)))
+    body_col = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True, spacing=0)
+    footer_container = ft.Container(bgcolor=SURFACE,
+                                    border=ft.Border(top=ft.BorderSide(1,BORDER)))
 
-    # ── Output card ───────────────────────────────────────────────
-    output_card = ft.Container(
-        content=ft.Column([
-            ft.Row([
-                make_label("STEP 03  //  JSON OUTPUT"),
+    def rebuild(e=None):
+        w = page.width or 400
+        pad = 10 if w < 400 else 14
+
+        # ── Header ────────────────────────────────────────────────
+        status_pill = ft.Container(
+            content=ft.Row([status_dot, status_text], spacing=4, tight=True),
+            padding=ft.Padding(7, 4, 7, 4),
+            bgcolor=CARD, border_radius=5, border=bdr(),
+        )
+        if w < 480:
+            hbody = ft.Column([
                 ft.Row([
-                    make_icon_btn(ft.Icons.COPY_ALL,       "Copy",      copy_output, ACCENT2),
-                    make_icon_btn(ft.Icons.DELETE_OUTLINE, "Clear All", clear_all,   MUTED),
-                ], spacing=0),
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Container(height=8),
-            ft.Row([output_field], expand=True),
-        ], spacing=0, expand=True),
-        padding=ft.Padding(16, 16, 16, 16), expand=True,
-        bgcolor=CARD, border_radius=10, border=all_border(),
-    )
+                    ft.Container(width=3, height=18, bgcolor=ACCENT, border_radius=2),
+                    ft.Text("PROXY CHAINER", font_family="Syne-ExtraBold",
+                            size=13, color=TEXT, weight=ft.FontWeight.W_800),
+                    ft.Container(expand=True),
+                    status_pill,
+                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Text("SOCKS → VLESS / VMess / Trojan / SS",
+                        font_family="JetBrains", size=8, color=TEXT_DIM),
+            ], spacing=2, tight=True)
+        else:
+            hbody = ft.Row([
+                ft.Row([
+                    ft.Container(width=4, height=22, bgcolor=ACCENT, border_radius=2),
+                    ft.Column([
+                        ft.Text("PROXY CHAINER", font_family="Syne-ExtraBold",
+                                size=16, color=TEXT, weight=ft.FontWeight.W_800,
+                                style=ft.TextStyle(letter_spacing=2)),
+                        ft.Text("SOCKS → VLESS / VMess / Trojan / SS",
+                                font_family="JetBrains", size=9, color=TEXT_DIM),
+                    ], spacing=1, tight=True),
+                ], spacing=8),
+                status_pill,
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+               vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-    # ── IP footer ─────────────────────────────────────────────────
-    ip_footer = ft.Container(
-        content=ft.Row([
-            ft.Icon(ft.Icons.LANGUAGE, color=MUTED, size=14),
-            ip_row,
-            ft.Container(expand=True),
-            make_icon_btn(ft.Icons.REFRESH, "Refresh IP", refresh_ip, ACCENT),
-        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        padding=ft.Padding(20, 12, 20, 12), bgcolor=SURFACE,
-        border=ft.Border(top=ft.BorderSide(1, BORDER)),
-    )
+        header_container.content = ft.Container(
+            content=hbody,
+            padding=ft.Padding(pad, 10, pad, 10),
+        )
 
-    # ── Responsive input layout ───────────────────────────────────
-    inputs_container = ft.Container()
+        # ── Cards ─────────────────────────────────────────────────
+        socks_card = ft.Container(
+            content=ft.Column([
+                ft.Row([lbl("01  //  SOCKS"),
+                        ibtn(ft.Icons.CONTENT_PASTE, "Paste", paste_socks)],
+                       alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Container(height=6),
+                ft.Row([socks_input]),   # Row forces full width
+            ], spacing=0),
+            padding=ft.Padding(12, 12, 12, 12),
+            bgcolor=CARD, border_radius=10, border=bdr(),
+        )
+        proxy_card = ft.Container(
+            content=ft.Column([
+                ft.Row([lbl("02  //  CONFIG"),
+                        ibtn(ft.Icons.CONTENT_PASTE, "Paste", paste_proxy)],
+                       alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Container(height=6),
+                ft.Row([proxy_input]),   # Row forces full width
+            ], spacing=0),
+            padding=ft.Padding(12, 12, 12, 12),
+            bgcolor=CARD, border_radius=10, border=bdr(),
+        )
 
-    def build_inputs() -> ft.Control:
-        if (page.width or 800) < 600:
-            return ft.Column([socks_card, proxy_card], spacing=12)
-        return ft.Row([
-            ft.Column([socks_card], expand=1),
-            ft.Column([proxy_card], expand=1),
-        ], spacing=16)
+        if w < 600:
+            # full width on mobile
+            socks_card.expand = False
+            proxy_card.expand = False
+            cards = ft.Column([socks_card, proxy_card], spacing=10)
+        else:
+            # 50/50 on desktop
+            socks_card.expand = True
+            proxy_card.expand = True
+            cards = ft.Row([socks_card, proxy_card], spacing=12,
+                           vertical_alignment=ft.CrossAxisAlignment.START)
 
-    def on_resize(e) -> None:
-        inputs_container.content = build_inputs()
+        # ── Generate row ──────────────────────────────────────────
+        # Layout: two separate controls side by side
+        #   LEFT:  compact toggle card  [MOB ◉ PC]
+        #   RIGHT: full green GENERATE button (expands to fill)
+
+        mob_label = ft.Text(
+            "MOB", font_family="JetBrains", size=9,
+            color=TEXT if mobile_switch.value else MUTED,
+        )
+        pc_label = ft.Text(
+            "PC", font_family="JetBrains", size=9,
+            color=TEXT if not mobile_switch.value else MUTED,
+        )
+
+        def _on_switch(e):
+            mob_label.color = TEXT if mobile_switch.value else MUTED
+            pc_label.color  = TEXT if not mobile_switch.value else MUTED
+            page.update()
+        mobile_switch.on_change = _on_switch
+
+        toggle_card = ft.Container(
+            content=ft.Column([
+                ft.Text("MODE", font_family="JetBrains", size=8, color=ACCENT),
+                ft.Row([mob_label, mobile_switch, pc_label],
+                       spacing=2, tight=True,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=2, tight=True,
+               horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding(14, 8, 14, 8),
+            bgcolor=CARD,
+            border_radius=10,
+            border=bdr(),
+        )
+
+        gen_btn = ft.Container(
+            content=ft.GestureDetector(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.BOLT, color=BG, size=16),
+                    ft.Text("GENERATE CONFIG", font_family="Syne-Bold", size=13,
+                            color=BG, weight=ft.FontWeight.W_700,
+                            style=ft.TextStyle(letter_spacing=0.8)),
+                ], spacing=8, tight=True,
+                   alignment=ft.MainAxisAlignment.CENTER),
+                on_tap=process_chain,
+            ),
+            expand=True,
+            height=56,
+            bgcolor=ACCENT,
+            border_radius=10,
+            alignment=ft.Alignment(0, 0),
+        )
+
+        gen_row = ft.Row([toggle_card, gen_btn], spacing=10,
+                         vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        # ── Output card ───────────────────────────────────────────
+        output_card = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    lbl("03  //  JSON OUTPUT"),
+                    ft.Row([
+                        ibtn(ft.Icons.COPY_ALL,         "Copy",  copy_output, ACCENT2),
+                        ibtn(ft.Icons.DOWNLOAD_ROUNDED, "Save",  export_json, ACCENT),
+                        ibtn(ft.Icons.DELETE_OUTLINE,   "Clear", clear_all,   MUTED),
+                    ], spacing=0),
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Container(height=6),
+                ft.Row([output_field]),   # Row forces full width
+                ft.Text(
+                    "Auto-copied on generate · re-copy or save with buttons above",
+                    font_family="JetBrains", size=9, color=MUTED,
+                ),
+            ], spacing=4),
+            padding=ft.Padding(12, 12, 12, 12),
+            bgcolor=CARD, border_radius=10, border=bdr(),
+        )
+
+        # ── Body column contents ──────────────────────────────────
+        body_col.controls = [
+            ft.Container(
+                content=ft.Column([
+                    cards,
+                    glow(),
+                    gen_row,
+                    glow(),
+                    output_card,
+                ], spacing=10),
+                padding=ft.Padding(pad, pad, pad, pad),
+            )
+        ]
+
+        # ── Footer ────────────────────────────────────────────────
+        footer_container.content = ft.GestureDetector(
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.LANGUAGE, color=MUTED, size=11),
+                        mono("IP", 9), ip_val,
+                        ft.Container(width=1, height=8, bgcolor=BORDER,
+                                     margin=ft.Margin(4,0,4,0)),
+                        mono("CITY", 9), city_val,
+                        ft.Container(width=1, height=8, bgcolor=BORDER,
+                                     margin=ft.Margin(4,0,4,0)),
+                        mono("PING", 9), ping_val, ping_dot,
+                        fetch_lbl,
+                    ], spacing=3, wrap=True,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Row([
+                        ft.Icon(ft.Icons.REFRESH, color=MUTED, size=10),
+                        mono("Tap to refresh", 9, MUTED),
+                    ], spacing=3),
+                ], spacing=3, tight=True),
+                padding=ft.Padding(pad, 8, pad, 8),
+            ),
+            on_tap=refresh_ip,
+        )
+
         page.update()
 
-    page.on_resized          = on_resize
-    inputs_container.content = build_inputs()
+    page.on_resized = rebuild
 
-    # ── Body ──────────────────────────────────────────────────────
-    body = ft.Container(
-        content=ft.Column([
-            inputs_container,
-            # استفاده از ردیف اصلاح شده
-            ft.Container(content=mobile_options_row, margin=ft.margin.only(top=10)), 
-            make_glowing_divider(),
-            generate_btn,
-            make_glowing_divider(),
-            output_card,
-        ], spacing=16),
-        padding=ft.Padding(20, 20, 20, 20),
-    )
-
-    # ── Assemble ──────────────────────────────────────────────────
+    # Assemble outer skeleton first, then fill via rebuild()
     page.add(
-        ft.Column(
-            controls=[
-                header,
-                ft.ListView(controls=[body], expand=True, padding=0),
-                ip_footer,
-            ],
-            spacing=0, expand=True,
-        )
+        ft.Column([
+            header_container,
+            body_col,
+            footer_container,
+        ], spacing=0, expand=True)
     )
 
-    # Auto-fetch IP + ping on startup
+    rebuild()
     threading.Thread(target=lambda: refresh_ip(None), daemon=True).start()
