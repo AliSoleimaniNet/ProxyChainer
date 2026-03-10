@@ -127,24 +127,30 @@ def _parse_uri(url: str, protocol: str, remark: str = "") -> dict:
 
 # ── Outbound builder ──────────────────────────────────────────────────────────
 
-def build_outbound(info: dict, dialer_tag: str) -> dict:
+def build_outbound(info: dict, dialer_tag: str | None, tag: str = "proxy-chain") -> dict:
     """
     Convert a parsed proxy dict (from parse_proxy_url) into an
-    Xray-compatible outbound object with dialerProxy set to dialer_tag.
+    Xray-compatible outbound object.
+    If dialer_tag is given, sets sockopt.dialerProxy so this outbound
+    tunnels through the named outbound (used for chaining).
     """
     protocol = info["protocol"]
     addr     = info["addr"]
     port     = info["port"]
     params   = info.get("params", {})
 
+    sockopt = {}
+    if dialer_tag:
+        sockopt["dialerProxy"] = dialer_tag
+
     outbound: dict = {
-        "tag":      "proxy-chain",
+        "tag":      tag,
         "protocol": protocol,
         "settings": {},
         "streamSettings": {
             "network":  params.get("type", "tcp"),
             "security": params.get("security", "none") or "none",
-            "sockopt":  {"dialerProxy": dialer_tag},
+            "sockopt":  sockopt,
         },
     }
 

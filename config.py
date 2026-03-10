@@ -1,6 +1,11 @@
 """
-config.py — Xray/v2ray config builder logic.
-All functions are pure (no UI / page state).
+config.py — Xray/v2ray config builder.
+
+Supports ANY two-hop chain:  hop1 → hop2
+Each hop can be: socks:// vless:// vmess:// trojan:// ss://
+
+Mobile config is V2rayNG-compatible (no inbounds — V2rayNG provides its own).
+Desktop config adds socks:10808 + http:10809 inbounds.
 """
 
 import json
@@ -9,43 +14,80 @@ from urllib.parse import urlparse
 from parser import parse_proxy_url, build_outbound
 
 
-def build_config(socks_url: str, proxy_url: str, mobile: bool) -> dict:
+def _is_socks(url: str) -> bool:
+    return url.strip().lower().startswith("socks")
+
+
+def _get_remark(url: str) -> str:
+    url = url.strip()
+    if "#" in url:
+        return url[url.index("#") + 1:]
+    return ""
+
+
+def _build_socks_outbound(url: str, tag: str) -> dict:
+    raw = url.strip()
+    if "#" in raw:
+        raw = raw[: raw.index("#")]
+    parsed = urlparse(raw)
+    addr, port = parsed.hostname, parsed.port
+    if not addr or not port:
+        raise ValueError(f"Invalid SOCKS URL: {url!r}  (expected socks://host:port)")
+    out: dict = {
+        "tag":      tag,
+        "protocol": "socks",
+        "settings": {"servers": [{"address": addr, "port": port}]},
+    }
+    if parsed.username and parsed.password:
+        out["settings"]["servers"][0]["users"] = [
+            {"user": parsed.username, "pass": parsed.password}
+        ]
+    return out
+
+
+def build_config(hop1_url: str, hop2_url: str, mobile: bool) -> dict:
     """
-    Parse inputs and return a complete Xray JSON config dict.
-    Raises ValueError with a human-readable message on bad input.
+    Build a complete Xray config chaining hop1 → hop2.
+
+    Mobile mode (V2rayNG):
+      - NO inbounds (V2rayNG injects its own tproxy/VPN inbound)
+      - dns block with Iranian bypass
+      - routing: ir/private → direct, else → hop2
+
+    Desktop mode (v2rayN / CLI):
+      - socks:10808 + http:10809 inbounds
+      - simple routing: all → hop2
     """
-    v_url = proxy_url.strip()
-    s_url = socks_url.strip()
+    u1 = hop1_url.strip()
+    u2 = hop2_url.strip()
 
-    if not v_url or not s_url:
-        raise ValueError("Both SOCKS and proxy fields are required")
+    if not u1 or not u2:
+        raise ValueError("Both hop fields are required")
 
-    s_parsed = urlparse(s_url)
-    s_addr   = s_parsed.hostname
-    s_port   = s_parsed.port
-    if not s_addr or not s_port:
-        raise ValueError(f"Invalid SOCKS URL: {s_url!r}")
+    # hop1: connects directly to internet (the carrier)
+    if _is_socks(u1):
+        hop1_out = _build_socks_outbound(u1, tag="hop1")
+    else:
+        info1    = parse_proxy_url(u1)
+        hop1_out = build_outbound(info1, dialer_tag=None, tag="hop1")
 
-    info     = parse_proxy_url(v_url)
-    outbound = build_outbound(info, "iran-socks")
+    # hop2: connects through hop1 via dialerProxy
+    if _is_socks(u2):
+        hop2_out = _build_socks_outbound(u2, tag="hop2")
+        hop2_out.setdefault("streamSettings", {})
+        hop2_out["streamSettings"].setdefault("sockopt", {})
+        hop2_out["streamSettings"]["sockopt"]["dialerProxy"] = "hop1"
+    else:
+        info2    = parse_proxy_url(u2)
+        hop2_out = build_outbound(info2, dialer_tag="hop1", tag="hop2")
 
     config: dict = {
         "log": {"loglevel": "warning"},
         "outbounds": [
-            outbound,
-            {
-                "tag": "iran-socks",
-                "protocol": "socks",
-                "settings": {
-                    "servers": [{"address": s_addr, "port": s_port}]
-                },
-            },
-            {
-                "tag": "direct",
-                "protocol": "freedom",
-                "settings": {"domainStrategy": "UseIP"},
-            },
-            {"tag": "block", "protocol": "blackhole"},
+            hop2_out,
+            hop1_out,
+            {"tag": "direct",  "protocol": "freedom",   "settings": {"domainStrategy": "UseIP"}},
+            {"tag": "block",   "protocol": "blackhole",  "settings": {}},
         ],
     }
 
@@ -57,110 +99,107 @@ def build_config(socks_url: str, proxy_url: str, mobile: bool) -> dict:
     return config
 
 
-def build_config_json(socks_url: str, proxy_url: str, mobile: bool) -> str:
-    """Return the config as a pretty-printed JSON string."""
-    return json.dumps(build_config(socks_url, proxy_url, mobile), indent=2)
+def build_config_json(hop1_url: str, hop2_url: str, mobile: bool) -> str:
+    return json.dumps(build_config(hop1_url, hop2_url, mobile), indent=2)
 
 
-def get_protocol(proxy_url: str) -> str:
-    """Return the protocol name of the proxy URL (e.g. 'vless')."""
-    info = parse_proxy_url(proxy_url.strip())
-    return info["protocol"]
+def get_protocol(url: str) -> str:
+    u = url.strip()
+    if _is_socks(u):
+        return "socks"
+    return parse_proxy_url(u)["protocol"]
 
 
-def get_filename(socks_url: str, proxy_url: str) -> str:
-    """
-    Build a filename from both inputs:
-      <socks_host>-<proxy_remark_or_host>.json
-
-    Examples:
-      1.2.3.4-MyServer.json
-      iran-proxy-🇩🇪Frankfurt.json
-    """
+def get_filename(hop1_url: str, hop2_url: str) -> str:
     import re
 
     def _safe(name: str) -> str:
-        """Keep letters, digits, dots, hyphens, underscores. Replace rest with _."""
-        # Normalize unicode (e.g. emoji in remarks) — keep as-is, just strip path chars
         name = name.strip()
-        name = re.sub(r'[\/:*?"<>|]', "_", name)   # strip filesystem-illegal chars
-        return name[:48] or "unnamed"                 # max 48 chars per segment
+        name = re.sub(r'[\/:*?"<>|\\]', "_", name)
+        return name[:48] or "unnamed"
 
-    # SOCKS name → #remark if present, else hostname
-    try:
-        from urllib.parse import urlparse as _up
-        s_raw = socks_url.strip()
-        if "#" in s_raw:
-            socks_host = s_raw[s_raw.index("#") + 1:]
-        else:
-            socks_host = _up(s_raw).hostname or s_raw
-    except Exception:
-        socks_host = socks_url.strip()
+    def _name(url: str) -> str:
+        remark = _get_remark(url)
+        if remark:
+            return remark
+        u = url.strip()
+        if "#" in u:
+            u = u[: u.index("#")]
+        if _is_socks(u):
+            return urlparse(u).hostname or "socks"
+        try:
+            info = parse_proxy_url(u)
+            return info.get("remark") or info.get("addr") or "proxy"
+        except Exception:
+            return "proxy"
 
-    # Proxy name → #remark if present, else hostname
-    try:
-        info = parse_proxy_url(proxy_url.strip())
-        proxy_name = info.get("remark") or info.get("addr") or "proxy"
-    except Exception:
-        proxy_name = "proxy"
-
-    return f"{_safe(socks_host)}-{_safe(proxy_name)}"
+    return f"{_safe(_name(hop1_url))}-{_safe(_name(hop2_url))}"
 
 
-# ── Private helpers ────────────────────────────────────────────────────────────
+# ── Mobile routing — V2rayNG compatible ──────────────────────────────────────
+# V2rayNG docs / latest behaviour:
+#   • Do NOT add inbounds — V2rayNG manages its own VPN/tproxy inbound
+#   • outboundTag names must match exactly what's in outbounds[]
+#   • dns.servers list: first entry = main, rest = fallback
+#   • fakedns is optional; skip it to keep config minimal
+#   • routeOnly in dns is NOT needed for basic usage
+#   • "freedom" outbound domainStrategy="UseIP" ensures direct domains resolve locally
 
 def _apply_mobile_routing(config: dict) -> None:
-    """Add mobile-style DNS + Iran-bypass routing rules."""
-    config["dns"] = {"servers": ["1.1.1.1", "8.8.8.8"]}
+    config["dns"] = {
+        "servers": [
+            {
+                "address": "223.5.5.5",       # Alibaba DNS — fast inside Iran for .ir
+                "domains": ["geosite:ir"],
+                "expectIPs": ["geoip:ir"],
+            },
+            "1.1.1.1",                         # Cloudflare — for everything else
+            "8.8.8.8",                         # Google fallback
+        ]
+    }
     config["routing"] = {
         "domainStrategy": "IPIfNonMatch",
         "rules": [
+            # Iranian domains and IPs → go direct (bypass proxy)
             {
                 "type": "field",
                 "outboundTag": "direct",
-                "domain": ["geosite:ir", "domain:.ir"],
+                "domain": ["geosite:ir"],
             },
             {
                 "type": "field",
                 "outboundTag": "direct",
                 "ip": ["geoip:ir", "geoip:private"],
             },
+            # Everything else → through the chain
             {
                 "type": "field",
-                "outboundTag": "proxy-chain",
+                "outboundTag": "hop2",
                 "port": "0-65535",
             },
         ],
     }
 
 
+# ── Desktop routing — v2rayN / CLI ────────────────────────────────────────────
+
 def _apply_desktop_routing(config: dict) -> None:
-    """Add desktop inbounds (SOCKS 10808 + HTTP 10809) and simple routing."""
     config["inbounds"] = [
         {
-            "tag": "socks-in",
-            "port": 10808,
-            "listen": "127.0.0.1",
+            "tag": "socks-in", "port": 10808, "listen": "127.0.0.1",
             "protocol": "socks",
             "settings": {"auth": "noauth", "udp": True},
             "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
         },
         {
-            "tag": "http-in",
-            "port": 10809,
-            "listen": "127.0.0.1",
-            "protocol": "http",
-            "settings": {},
+            "tag": "http-in", "port": 10809, "listen": "127.0.0.1",
+            "protocol": "http", "settings": {},
             "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
         },
     ]
     config["routing"] = {
         "domainStrategy": "IPIfNonMatch",
         "rules": [
-            {
-                "type": "field",
-                "outboundTag": "proxy-chain",
-                "port": "0-65535",
-            }
+            {"type": "field", "outboundTag": "hop2", "port": "0-65535"},
         ],
     }
