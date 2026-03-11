@@ -1,30 +1,33 @@
 """
-network.py
+core/network.py
 Ping measurement and IP info fetching with multiple provider fallbacks.
-Works on desktop (requests), gracefully degrades on web (httpx / no ping).
+Prefers requests (desktop/mobile), falls back to httpx (web-compatible).
 """
 
 import time
 
-# Try requests first (desktop/mobile builds), then httpx (web-compatible)
 try:
     import requests as _req
+
     def _get(url, timeout=5):
         r = _req.get(url, timeout=timeout)
         return r.status_code, r.json()
+
     def _get_raw(url, timeout=5):
-        r = _req.get(url, timeout=timeout)
-        return r.status_code
+        return _req.get(url, timeout=timeout).status_code
+
     HAS_HTTP = True
 except ImportError:
     try:
         import httpx as _httpx
+
         def _get(url, timeout=5):
             r = _httpx.get(url, timeout=timeout, follow_redirects=True)
             return r.status_code, r.json()
+
         def _get_raw(url, timeout=5):
-            r = _httpx.get(url, timeout=timeout, follow_redirects=True)
-            return r.status_code
+            return _httpx.get(url, timeout=timeout, follow_redirects=True).status_code
+
         HAS_HTTP = True
     except ImportError:
         HAS_HTTP = False
@@ -33,11 +36,13 @@ except ImportError:
 # ── Ping ──────────────────────────────────────────────────────────────────────
 
 def measure_ping(count: int = 3) -> float | None:
-    """HTTP ping via Google generate_204. Returns avg ms or None on failure."""
+    """HTTP ping via Google generate_204. Returns average ms or None on failure."""
     if not HAS_HTTP:
         return None
+
     url   = "https://www.google.com/generate_204"
     times = []
+
     for _ in range(count):
         try:
             start   = time.perf_counter()
@@ -47,16 +52,15 @@ def measure_ping(count: int = 3) -> float | None:
                 times.append(elapsed)
         except Exception:
             pass
-    if not times:
-        return None
-    return round(sum(times) / len(times), 1)
+
+    return round(sum(times) / len(times), 1) if times else None
 
 
-# ── IP providers ──────────────────────────────────────────────────────────────
+# ── IP info ───────────────────────────────────────────────────────────────────
 
 def get_ip_info() -> dict | None:
     """
-    Try each provider in order. Returns dict with keys:
+    Try each provider in order. Returns dict:
         ip, city, country, org, ping
     Returns None if all providers fail.
     """
@@ -82,8 +86,7 @@ def get_ip_info() -> dict | None:
 
 
 def _from_ip_api_com() -> dict | None:
-    # 45 req/min, no key needed, HTTP (not HTTPS) — works through proxies too
-    status, d = _get("http://ip-api.com/json/?fields=status,country,city,org,query")
+    _, d = _get("http://ip-api.com/json/?fields=status,country,city,org,query")
     if d.get("status") != "success":
         return None
     return {
@@ -95,8 +98,7 @@ def _from_ip_api_com() -> dict | None:
 
 
 def _from_ipinfo_io() -> dict | None:
-    # 50k req/month, no key needed
-    status, d = _get("https://ipinfo.io/json")
+    _, d = _get("https://ipinfo.io/json")
     if "ip" not in d:
         return None
     return {
@@ -108,8 +110,7 @@ def _from_ipinfo_io() -> dict | None:
 
 
 def _from_ipapi_co() -> dict | None:
-    # 1k req/day, no key needed
-    status, d = _get("https://ipapi.co/json/")
+    _, d = _get("https://ipapi.co/json/")
     if d.get("error"):
         return None
     return {
@@ -121,8 +122,7 @@ def _from_ipapi_co() -> dict | None:
 
 
 def _from_freeipapi() -> dict | None:
-    # Unlimited, no key needed
-    status, d = _get("https://freeipapi.com/api/json")
+    _, d = _get("https://freeipapi.com/api/json")
     if "ipAddress" not in d:
         return None
     return {

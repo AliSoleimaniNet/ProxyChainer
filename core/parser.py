@@ -1,6 +1,6 @@
 """
-parser.py
-Parse vless / vmess / trojan / ss URLs into normalized dicts,
+core/parser.py
+Parse vless / vmess / trojan / ss proxy URLs into normalized dicts,
 then build Xray-compatible outbound objects.
 """
 
@@ -9,26 +9,23 @@ import json
 from urllib.parse import urlparse, parse_qs, unquote
 
 
-# ── URL parser ────────────────────────────────────────────────────────────────
+# ── URL parsing ───────────────────────────────────────────────────────────────
 
 def parse_proxy_url(url: str) -> dict:
     """
-    Parse any of: vless, vmess, trojan, ss / shadowsocks
+    Parse any of: vless, vmess, trojan, ss / shadowsocks.
 
-    Returns a normalized dict:
-        protocol  str       — vless | vmess | trojan | ss
-        addr      str       — server hostname / IP
-        port      int       — server port
-        uuid      str       — user ID / password  (vless / vmess / trojan)
-        method    str       — cipher method       (ss only)
-        password  str       — password            (ss only)
-        params    dict[str] — transport / security query params
-
-    Raises ValueError on unsupported or malformed input.
+    Returns a normalized dict with keys:
+        protocol  str        vless | vmess | trojan | ss
+        addr      str        server hostname / IP
+        port      int        server port
+        uuid      str        user ID / password (vless / vmess / trojan)
+        method    str        cipher method (ss only)
+        password  str        password (ss only)
+        params    dict[str]  transport / security query params
     """
     url = url.strip()
 
-    # Extract fragment as remark before stripping
     remark = ""
     if "#" in url:
         remark = url[url.index("#") + 1:]
@@ -39,15 +36,12 @@ def parse_proxy_url(url: str) -> dict:
 
     protocol = url.split("://")[0].lower()
 
-    # ── VMess  (Base64-encoded JSON) ──────────────────────────────
     if protocol == "vmess":
         return _parse_vmess(url, remark)
 
-    # ── Shadowsocks ───────────────────────────────────────────────
     if protocol in ("ss", "shadowsocks"):
         return _parse_ss(url, remark)
 
-    # ── VLESS / Trojan  (standard URI) ────────────────────────────
     if protocol in ("vless", "trojan"):
         return _parse_uri(url, protocol, remark)
 
@@ -56,7 +50,7 @@ def parse_proxy_url(url: str) -> dict:
 
 def _parse_vmess(url: str, remark: str = "") -> dict:
     b64 = url[len("vmess://"):]
-    b64 += "=" * (-len(b64) % 4)          # fix padding
+    b64 += "=" * (-len(b64) % 4)
     try:
         d = json.loads(base64.b64decode(b64).decode("utf-8"))
     except Exception as ex:
@@ -83,7 +77,6 @@ def _parse_ss(url: str, remark: str = "") -> dict:
     parsed   = urlparse(url)
     userinfo = parsed.username or ""
 
-    # userinfo may be  base64(method:password)  OR plain  method:password
     method   = "aes-256-gcm"
     password = ""
     try:
@@ -127,21 +120,15 @@ def _parse_uri(url: str, protocol: str, remark: str = "") -> dict:
 
 # ── Outbound builder ──────────────────────────────────────────────────────────
 
-def build_outbound(info: dict, dialer_tag: str | None, tag: str = "proxy-chain") -> dict:
+def build_outbound(info: dict, tag: str = "proxy") -> dict:
     """
-    Convert a parsed proxy dict (from parse_proxy_url) into an
-    Xray-compatible outbound object.
-    If dialer_tag is given, sets sockopt.dialerProxy so this outbound
-    tunnels through the named outbound (used for chaining).
+    Convert a parsed proxy dict into an Xray/V2Ray outbound object.
+    proxySettings chaining is applied by the caller in config.py.
     """
     protocol = info["protocol"]
     addr     = info["addr"]
     port     = info["port"]
     params   = info.get("params", {})
-
-    sockopt = {}
-    if dialer_tag:
-        sockopt["dialerProxy"] = dialer_tag
 
     outbound: dict = {
         "tag":      tag,
@@ -150,11 +137,9 @@ def build_outbound(info: dict, dialer_tag: str | None, tag: str = "proxy-chain")
         "streamSettings": {
             "network":  params.get("type", "tcp"),
             "security": params.get("security", "none") or "none",
-            "sockopt":  sockopt,
         },
     }
 
-    # ── Protocol-level settings ───────────────────────────────────
     if protocol == "vless":
         outbound["settings"] = {
             "vnext": [{"address": addr, "port": port, "users": [{
@@ -181,11 +166,10 @@ def build_outbound(info: dict, dialer_tag: str | None, tag: str = "proxy-chain")
     elif protocol == "ss":
         outbound["settings"] = {
             "servers": [{"address": addr, "port": port,
-                         "method":  info["method"],
+                         "method":   info["method"],
                          "password": info["password"]}]
         }
 
-    # ── Security settings ─────────────────────────────────────────
     sec = params.get("security", "").lower()
 
     if sec == "tls":
@@ -205,7 +189,6 @@ def build_outbound(info: dict, dialer_tag: str | None, tag: str = "proxy-chain")
             "spiderX":     params.get("spx",  "/"),
         }
 
-    # ── Transport settings ────────────────────────────────────────
     net = params.get("type", "tcp").lower()
 
     if net == "ws":
