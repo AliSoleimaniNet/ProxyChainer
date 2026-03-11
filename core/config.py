@@ -72,7 +72,12 @@ def build_config(hop1_url: str, hop2_url: str, mobile: bool) -> dict:
         else build_outbound(parse_proxy_url(u2), tag="hop2")
     )
 
-    hop2_out["proxySettings"] = {"tag": "hop1"}
+    if "streamSettings" not in hop2_out:
+        hop2_out["streamSettings"] = {}
+    
+    hop2_out["streamSettings"]["sockopt"] = {
+        "dialerProxy": "hop1"
+    }
 
     config: dict = {
         "log": {"loglevel": "warning"},
