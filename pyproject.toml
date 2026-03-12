@@ -1,7 +1,7 @@
 [project]
 name = "proxychainer"
-version = "1.2.4"
-description = "Any -> Any Proxy Chainer"
+version = "1.3.0"
+description = "N-Hop Any -> Any Proxy Chainer"
 requires-python = ">=3.11"
 dependencies = [
     "flet>=0.82.0",
@@ -16,7 +16,7 @@ include = ["core*", "ui*", "utils*"]
 [tool.flet]
 app_name = "ProxyChainer"
 product_name = "ProxyChainer"
-description = "any → any proxy tunnel builder"
+description = "chain any number of proxies · any → any"
 org = "com.proxychainer"
 assets_dir = "assets"
 
