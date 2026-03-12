@@ -1,16 +1,17 @@
 """
 ui/app.py
-ProxyChainer app controller.
+ProxyChainer app controller — N-hop edition.
 """
 
 import asyncio
+import json
 import pathlib
 import platform
 import sys
 
 import flet as ft
 
-from core.config  import build_config_json, get_protocol, get_filename
+from core.config  import build_config, build_config_json, build_config_list_json, get_protocol, get_filename
 from core.network import get_ip_info
 from utils.save   import save_config, save_batch
 from utils.log    import Logger
@@ -55,6 +56,16 @@ def _parse_lines(text: str) -> list[str]:
     return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
 
 
+def _cartesian(lists: list[list[str]]) -> list[list[str]]:
+    """Return the cartesian product of N lists as a list of N-tuples (as lists)."""
+    if not lists:
+        return []
+    result = [[]]
+    for lst in lists:
+        result = [prev + [item] for prev in result for item in lst]
+    return result
+
+
 def build_page(page: ft.Page) -> None:
     page.title      = "ProxyChainer"
     page.theme_mode = ft.ThemeMode.DARK
@@ -62,7 +73,6 @@ def build_page(page: ft.Page) -> None:
     page.fonts      = FONTS
     page.padding    = 0
     page.spacing    = 0
-    # Kill the grey window area shown below content on desktop builds
     try:
         page.window.bgcolor = BG
     except Exception:
@@ -155,6 +165,7 @@ def build_page(page: ft.Page) -> None:
         )
 
     # ── Single page ───────────────────────────────────────────────────────────
+
     async def _process_chain():
         if _busy[0]:
             return
@@ -162,16 +173,31 @@ def build_page(page: ft.Page) -> None:
         single_page.set_busy(True, page)
         set_status("PROCESSING…", ACCENT2)
         try:
-            h1  = single_page.hop1_input.value.strip()
-            h2  = single_page.hop2_input.value.strip()
-            mob = mobile_switch.value
-            logger.add(f"hop1={h1[:50]}  hop2={h2[:50]}  mobile={mob}", "INFO")
-            json_text = await asyncio.to_thread(build_config_json, h1, h2, mob)
-            p1, p2 = get_protocol(h1), get_protocol(h2)
-            mode   = "MOB" if mob else "PC"
+            hops = single_page.hop_values
+            mob  = mobile_switch.value
+
+            # Validate
+            empty = [i + 1 for i, h in enumerate(hops) if not h]
+            if empty:
+                raise ValueError(f"Hop {', '.join(str(i) for i in empty)} is empty")
+
+            hop_summary = "  →  ".join(h[:40] for h in hops)
+            logger.add(f"hops={len(hops)}  mobile={mob}  {hop_summary}", "INFO")
+
+            # Build config (returns dict)
+            cfg       = await asyncio.to_thread(build_config, hops, mob)
+            json_text = json.dumps([cfg], indent=2)
+
+            protocols = [get_protocol(h) for h in hops]
+            chain_str = "→".join(p.upper() for p in protocols)
+            mode      = "MOB" if mob else "PC"
+
             single_page.output_field.value = json_text
-            await ft.Clipboard().set(json_text)
-            set_status(f"✓ {mode} · {p1.upper()}→{p2.upper()} — COPIED", ACCENT, "OK")
+            try:
+                await ft.Clipboard().set(json_text)
+            except Exception:
+                pass
+            set_status(f"✓ {mode} · {chain_str} · {len(hops)} HOPS — COPIED", ACCENT, "OK")
         except Exception as ex:
             set_status(f"ERROR: {ex}", DANGER, "ERROR")
         finally:
@@ -181,15 +207,15 @@ def build_page(page: ft.Page) -> None:
 
     async def _copy_output():
         if single_page.output_field.value:
-            await ft.Clipboard().set(single_page.output_field.value)
+            try:
+                await ft.Clipboard().set(single_page.output_field.value)
+            except Exception:
+                pass
             set_status("COPIED ✓", ACCENT, "OK")
 
-    async def _paste_hop1():
-        single_page.hop1_input.value = await ft.Clipboard().get() or ""
-        page.update()
-
-    async def _paste_hop2():
-        single_page.hop2_input.value = await ft.Clipboard().get() or ""
+    async def _paste_single_hop(index: int):
+        val = await ft.Clipboard().get() or ""
+        single_page.set_hop_value(index, val)
         page.update()
 
     async def _export_single():
@@ -197,7 +223,7 @@ def build_page(page: ft.Page) -> None:
             set_status("GENERATE FIRST", DANGER, "WARN")
             return
         try:
-            name = get_filename(single_page.hop1_input.value, single_page.hop2_input.value)
+            name = get_filename(single_page.hop_values)
         except Exception:
             name = ""
         ok, msg = await save_config(single_page.output_field.value, page=page, name=name)
@@ -212,8 +238,8 @@ def build_page(page: ft.Page) -> None:
         page.update()
 
     def _clear_single(e=None):
-        single_page.hop1_input.value      = ""
-        single_page.hop2_input.value      = ""
+        for f in single_page._hop_fields:
+            f.value = ""
         single_page.output_field.value    = ""
         single_page.saved_path_text.value = ""
         set_status("CLEARED", MUTED)
@@ -223,62 +249,79 @@ def build_page(page: ft.Page) -> None:
         mobile_switch = mobile_switch,
         on_generate   = lambda e: page.run_task(_process_chain),
         on_copy       = lambda e: page.run_task(_copy_output),
-        on_paste_hop1 = lambda e: page.run_task(_paste_hop1),
-        on_paste_hop2 = lambda e: page.run_task(_paste_hop2),
+        on_paste      = lambda i: page.run_task(_paste_single_hop, i),
         on_export     = lambda e: page.run_task(_export_single),
         on_clear      = _clear_single,
     )
 
     # ── Group page ────────────────────────────────────────────────────────────
+
     async def _generate_group():
         if _busy[0]:
             return
         _busy[0] = True
         group_page.set_busy(True, page)
-        h1_list = _parse_lines(group_page.hop1_input.value)
-        h2_list = _parse_lines(group_page.hop2_input.value)
-        if not h1_list or not h2_list:
-            set_status("ADD URLS TO BOTH LISTS", DANGER, "WARN")
+
+        hop_lists = group_page.hop_lists
+        n_hops    = len(hop_lists)
+
+        # Validate: all columns must have at least 1 URL
+        empty_cols = [i + 1 for i, lst in enumerate(hop_lists) if not lst]
+        if empty_cols:
+            cols_str = ", ".join(str(c) for c in empty_cols)
+            set_status(f"ADD URLS TO HOP {cols_str}", DANGER, "WARN")
             _busy[0] = False
             group_page.set_busy(False, page)
             return
-        total  = len(h1_list) * len(h2_list)
-        mobile = mobile_switch.value
-        folder = group_page.folder_input.value.strip() or "ProxyChainer_Group"
-        logger.add(f"Group: {len(h1_list)}×{len(h2_list)}={total}", "INFO")
+
+        mobile    = mobile_switch.value
+        file_name = group_page.file_name_input.value.strip() or "ProxyChainer_Group"
+
+        # Cartesian product of all hop lists
+        combos = _cartesian(hop_lists)
+        total  = len(combos)
+
+        sizes_str = " × ".join(str(len(l)) for l in hop_lists)
+        logger.add(f"Group: {n_hops} hops  {sizes_str} = {total} configs", "INFO")
         set_status(f"BUILDING {total} CONFIGS…", ACCENT2)
+
         group_page.progress_bar.visible = True
         group_page.progress_bar.value   = 0
         group_page.result_text.value    = ""
         page.update()
-        configs: list[tuple[str, str]] = []
+
+        configs: list[dict] = []
         errors = 0
-        pairs  = [(u1, u2) for u1 in h1_list for u2 in h2_list]
+
         try:
-            for idx, (u1, u2) in enumerate(pairs, start=1):
+            for idx, hop_combo in enumerate(combos, start=1):
                 try:
-                    jt   = await asyncio.to_thread(build_config_json, u1, u2, mobile)
-                    name = get_filename(u1, u2)
-                    configs.append((jt, name))
-                    logger.add(f"[{idx}/{total}] OK  {name}", "OK")
+                    cfg = await asyncio.to_thread(build_config, hop_combo, mobile)
+                    configs.append(cfg)
+                    logger.add(f"[{idx}/{total}] OK  {cfg.get('remarks', '')}", "OK")
                 except Exception as ex:
                     errors += 1
                     logger.add(f"[{idx}/{total}] SKIP: {ex}", "WARN")
                 group_page.progress_bar.value = idx / total
                 page.update()
+
             if not configs:
                 set_status("ALL CONFIGS FAILED", DANGER, "ERROR")
                 group_page.progress_bar.visible = False
                 page.update()
                 return
-            set_status(f"SAVING {len(configs)} FILES…", ACCENT2)
+
+            set_status(f"SAVING {len(configs)} CONFIGS…", ACCENT2)
             page.update()
-            saved, tot, path = await save_batch(configs, folder_name=folder, page=page)
+
+            ok, path = await save_batch(configs, file_name=file_name, page=page)
+
             group_page.progress_bar.visible = False
             mode_lbl = "MOBILE" if mobile else "DESKTOP"
-            if saved > 0:
-                err_s = f"  ({errors} skipped)" if errors else ""
-                set_status(f"✓ {saved}/{tot} SAVED · {mode_lbl}", ACCENT, "OK")
+            err_s    = f"  ({errors} skipped)" if errors else ""
+
+            if ok:
+                set_status(f"✓ {len(configs)}/{total} SAVED · {mode_lbl}", ACCENT, "OK")
                 group_page.result_text.value = f"📁  {path}{err_s}"
                 group_page.result_text.color = ACCENT
                 logger.add(f"Saved: {path}", "OK")
@@ -286,28 +329,26 @@ def build_page(page: ft.Page) -> None:
                 set_status("SAVE FAILED", DANGER, "ERROR")
                 group_page.result_text.value = f"✗  {path}"
                 group_page.result_text.color = DANGER
+
         finally:
             _busy[0] = False
             group_page.set_busy(False, page)
         page.update()
 
-    async def _paste_grp_hop1():
-        group_page.hop1_input.value = await ft.Clipboard().get() or ""
-        group_page.update_preview(mobile_switch.value)
-        page.update()
-
-    async def _paste_grp_hop2():
-        group_page.hop2_input.value = await ft.Clipboard().get() or ""
+    async def _paste_grp_hop(index: int):
+        val = await ft.Clipboard().get() or ""
+        if 0 <= index < len(group_page._hop_inputs):
+            group_page._hop_inputs[index].value = val
         group_page.update_preview(mobile_switch.value)
         page.update()
 
     def _clear_group(e=None):
-        group_page.hop1_input.value     = ""
-        group_page.hop2_input.value     = ""
-        group_page.folder_input.value   = ""
-        group_page.result_text.value    = ""
-        group_page.progress_bar.visible = False
-        group_page.progress_bar.value   = 0
+        for f in group_page._hop_inputs:
+            f.value = ""
+        group_page.file_name_input.value   = ""
+        group_page.result_text.value       = ""
+        group_page.progress_bar.visible    = False
+        group_page.progress_bar.value      = 0
         group_page.update_preview(mobile_switch.value)
         set_status("CLEARED", MUTED)
         page.update()
@@ -315,19 +356,16 @@ def build_page(page: ft.Page) -> None:
     group_page = GroupPage(
         mobile_switch = mobile_switch,
         on_generate   = lambda e: page.run_task(_generate_group),
-        on_paste_hop1 = lambda e: page.run_task(_paste_grp_hop1),
-        on_paste_hop2 = lambda e: page.run_task(_paste_grp_hop2),
+        on_paste      = lambda i: page.run_task(_paste_grp_hop, i),
         on_clear      = _clear_group,
     )
 
-    group_page.hop1_input.on_change = lambda e: (
-        group_page.update_preview(mobile_switch.value), page.update())
-    group_page.hop2_input.on_change = lambda e: (
-        group_page.update_preview(mobile_switch.value), page.update())
-
     # ── Log helpers ───────────────────────────────────────────────────────────
     async def _copy_log():
-        await ft.Clipboard().set(logger.to_text())
+        try:
+            await ft.Clipboard().set(logger.to_text())
+        except Exception:
+            pass
         set_status("LOG COPIED ✓", ACCENT, "OK")
 
     def _clear_log(e=None):
@@ -340,7 +378,6 @@ def build_page(page: ft.Page) -> None:
     _tab_ref    = ft.Container(bgcolor=BG)
     _body_ref   = ft.Container(bgcolor=BG)
 
-    # ── Scrollable body column — expand=True fills space between tabbar & footer
     _scroll_col = ft.Column(
         controls=[_body_ref],
         scroll=ft.ScrollMode.AUTO,
@@ -348,7 +385,6 @@ def build_page(page: ft.Page) -> None:
         spacing=0,
     )
 
-    # ── Outer column — expand=True gets full viewport height from Flutter
     _outer_col = ft.Column(
         controls=[
             _header_ref,
@@ -378,9 +414,9 @@ def build_page(page: ft.Page) -> None:
         _tab_ref.content    = build_tab_bar(tab, pad, _switch_tab)
 
         if tab == "single":
-            tab_content = single_page.build(w, toggle_card)
+            tab_content = single_page.build(w, toggle_card, page)
         elif tab == "group":
-            tab_content = group_page.build(w, toggle_card)
+            tab_content = group_page.build(w, toggle_card, page)
         else:
             log_info = (
                 f"→ {log_file}" if log_file else
@@ -410,12 +446,8 @@ def build_page(page: ft.Page) -> None:
 
     page.on_resized = lambda e: page.run_task(_on_resized, e)
 
-    # ── Page structure ────────────────────────────────────────────────────────
-    # page.scroll = None is REQUIRED — if page scrolls, Flutter gives
-    # _outer_col infinite height and expand=True stops working → grey void.
-    # _scroll_col with expand=True fills exact space between tabbar and footer.
+    # ── Boot ──────────────────────────────────────────────────────────────────
     page.scroll = None
-    # Build content before page.add so _body_ref has content on first render.
     rebuild()
     page.add(_outer_col)
 

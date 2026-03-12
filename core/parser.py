@@ -28,7 +28,7 @@ def parse_proxy_url(url: str) -> dict:
 
     remark = ""
     if "#" in url:
-        remark = url[url.index("#") + 1:]
+        remark = unquote(url[url.index("#") + 1:])
         url    = url[: url.index("#")]
 
     if "://" not in url:

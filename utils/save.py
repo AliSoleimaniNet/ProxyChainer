@@ -2,13 +2,18 @@
 utils/save.py
 Cross-platform file saving for single configs and batch exports.
 
+Single config  →  saves a JSON array file:  [config]
+Batch export   →  saves ONE JSON array file: [cfg1, cfg2, …]
+                  (no more folder creation)
+
   Windows / Linux / macOS  →  Desktop → Downloads → home
   Android                  →  /sdcard/Download
-  Web                      →  page.launch_url() with data: URI  (no UrlLauncher)
+  Web                      →  data: URI browser download
 """
 
 import base64
 import datetime
+import json
 import pathlib
 import platform
 import re
@@ -72,31 +77,25 @@ def _get_save_folder() -> pathlib.Path | None:
 
 
 async def _web_download(json_text: str, filename: str, page) -> tuple[bool, str]:
-    """
-    Trigger a browser download using page.launch_url() with a data: URI.
-    This avoids the UrlLauncher control which is unsupported in Flet web.
-    """
+    """Trigger a browser download via data URI."""
     try:
+        import flet as ft
         b64      = base64.b64encode(json_text.encode("utf-8")).decode("ascii")
         data_uri = f"data:application/json;base64,{b64}"
-        await page.launch_url_async(
-            data_uri,
-            web_window_name="_self",
-        )
+        launcher = ft.UrlLauncher()
+        page.overlay.append(launcher)
+        page.update()
+        await launcher.launch_url(data_uri)
         return True, f"DOWNLOAD ✓  {filename}"
-    except Exception:
-        # Fallback: try synchronous launch_url
-        try:
-            b64      = base64.b64encode(json_text.encode("utf-8")).decode("ascii")
-            data_uri = f"data:application/json;base64,{b64}"
-            page.launch_url(data_uri, web_window_name="_self")
-            return True, f"DOWNLOAD ✓  {filename}"
-        except Exception as ex2:
-            return False, f"WEB DOWNLOAD ERROR: {ex2}"
+    except Exception as ex:
+        return False, f"WEB DOWNLOAD ERROR: {ex}"
 
 
 async def save_config(json_text: str, page=None, name: str = "") -> tuple[bool, str]:
-    """Save a single config file. Returns (ok, message)."""
+    """
+    Save a single config file (already a JSON array string).
+    Returns (ok, message).
+    """
     filename = make_filename(name)
 
     if _is_web(page) and page is not None:
@@ -115,52 +114,30 @@ async def save_config(json_text: str, page=None, name: str = "") -> tuple[bool, 
 
 
 async def save_batch(
-    configs: list[tuple[str, str]],
-    folder_name: str,
+    configs: list[dict],
+    file_name: str,
     page=None,
-) -> tuple[int, int, str]:
+) -> tuple[bool, str]:
     """
-    Save multiple configs into a timestamped subfolder.
-    configs: list of (json_text, base_name)
-    Returns (saved_count, total_count, folder_path_or_message)
+    Save all configs as ONE JSON array file.
+
+    configs   : list of config dicts (already built, not serialized)
+    file_name : base name for the output file (without extension)
+    Returns (ok, path_or_message)
     """
-    total = len(configs)
+    filename = make_filename(file_name)
+    json_text = json.dumps(configs, indent=2)
 
     if _is_web(page) and page is not None:
-        saved = 0
-        for json_text, name in configs:
-            ok, _ = await _web_download(json_text, make_filename(name), page)
-            if ok:
-                saved += 1
-        return saved, total, f"DOWNLOADED {saved}/{total} files"
+        return await _web_download(json_text, filename, page)
 
-    base = _get_save_folder()
-    if base is None:
-        return 0, total, "SAVE FAILED: no writable folder"
+    folder = _get_save_folder()
+    if folder is None:
+        return False, "SAVE FAILED: no writable folder"
 
-    folder = base / _safe(f"{folder_name}_{_timestamp()}")
     try:
-        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / filename
+        path.write_text(json_text, encoding="utf-8")
+        return True, str(path)
     except Exception as ex:
-        return 0, total, f"FOLDER CREATE ERROR: {ex}"
-
-    saved      = 0
-    seen_names: set[str] = set()
-
-    for idx, (json_text, name) in enumerate(configs, start=1):
-        safe_name = _safe(name) if name else "config"
-        candidate = f"{safe_name}_{idx:03d}.json"
-
-        bump = 0
-        while candidate in seen_names:
-            bump     += 1
-            candidate = f"{safe_name}_{idx:03d}_{bump}.json"
-        seen_names.add(candidate)
-
-        try:
-            (folder / candidate).write_text(json_text, encoding="utf-8")
-            saved += 1
-        except Exception:
-            continue
-
-    return saved, total, str(folder)
+        return False, f"SAVE ERROR: {ex}"
